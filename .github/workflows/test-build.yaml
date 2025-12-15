@@ -1,22 +1,18 @@
-name: CI
+name: Build and Test
 
 on:
   push:
-    branches: [ main, master, 'claude/**' ]
+    branches: [ main, claude/** ]
   pull_request:
-    branches: [ main, master ]
+    branches: [ main ]
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build-and-test:
-    name: Build and Test
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        rust: [stable]
+  build:
+    name: Build Application
+    runs-on: ubuntu-latest
 
     steps:
     - name: Checkout code
@@ -25,7 +21,6 @@ jobs:
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@stable
       with:
-        toolchain: ${{ matrix.rust }}
         components: rustfmt, clippy
 
     - name: Cache cargo registry
@@ -52,23 +47,115 @@ jobs:
     - name: Run clippy
       run: cargo clippy -- -D warnings
 
-    - name: Build (debug)
-      run: cargo build --verbose
-
-    - name: Run tests
-      run: cargo test --verbose
-
-    - name: Build (release)
+    - name: Build application
       run: cargo build --release --verbose
 
-    - name: Run hello-world (Linux/macOS)
-      if: runner.os != 'Windows'
+    - name: Verify executable exists
       run: |
-        ./target/release/hello-world
-        ./target/release/hello-world GitHub
+        if [ ! -f ./target/release/hello-world ]; then
+          echo "Error: Executable 'hello-world' not found"
+          exit 1
+        fi
+        echo "✓ Executable built successfully"
 
-    - name: Run hello-world (Windows)
-      if: runner.os == 'Windows'
+    - name: Upload build artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: hello-world-executable
+        path: target/release/hello-world
+        retention-days: 1
+
+  test:
+    name: Test Application
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: ~/.cargo/registry
+        key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Cache cargo index
+      uses: actions/cache@v4
+      with:
+        path: ~/.cargo/git
+        key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Cache cargo build
+      uses: actions/cache@v4
+      with:
+        path: target
+        key: ${{ runner.os }}-cargo-test-target-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Run unit tests
+      run: cargo test --verbose
+
+    - name: Download build artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: hello-world-executable
+
+    - name: Make executable runnable
+      run: chmod +x ./hello-world
+
+    - name: Run application (default)
+      run: ./hello-world > output.txt
+
+    - name: Verify default output
       run: |
-        .\target\release\hello-world.exe
-        .\target\release\hello-world.exe GitHub
+        EXPECTED="Hello, World!"
+        ACTUAL=$(cat output.txt)
+        if [ "$ACTUAL" = "$EXPECTED" ]; then
+          echo "✓ Test passed: Output matches expected value"
+          echo "  Expected: $EXPECTED"
+          echo "  Actual: $ACTUAL"
+        else
+          echo "✗ Test failed: Output does not match"
+          echo "  Expected: $EXPECTED"
+          echo "  Actual: $ACTUAL"
+          exit 1
+        fi
+
+    - name: Run application (with argument)
+      run: ./hello-world Rust > output_rust.txt
+
+    - name: Verify argument output
+      run: |
+        EXPECTED="Hello, Rust!"
+        ACTUAL=$(cat output_rust.txt)
+        if [ "$ACTUAL" = "$EXPECTED" ]; then
+          echo "✓ Test passed: Output with argument matches expected value"
+          echo "  Expected: $EXPECTED"
+          echo "  Actual: $ACTUAL"
+        else
+          echo "✗ Test failed: Output does not match"
+          echo "  Expected: $EXPECTED"
+          echo "  Actual: $ACTUAL"
+          exit 1
+        fi
+
+    - name: Test clean target
+      run: |
+        cargo clean
+        if [ -f ./target/release/hello-world ]; then
+          echo "✗ Clean failed: Executable still exists"
+          exit 1
+        fi
+        echo "✓ Clean target works correctly"
+
+    - name: Test rebuild after clean
+      run: |
+        cargo build --release
+        if [ ! -f ./target/release/hello-world ]; then
+          echo "✗ Rebuild failed: Executable not created"
+          exit 1
+        fi
+        echo "✓ Rebuild after clean successful"
